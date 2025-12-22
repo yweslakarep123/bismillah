@@ -1,742 +1,461 @@
-# DPM-Solver: Solver ODE Cepat untuk Sampling Diffusion Probabilistic Model dalam Sekitar 10 Langkah
+# Diffusion Policy
 
-[![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-blue)](https://huggingface.co/spaces/LuChengTHU/dpmsolver_sdm)
+[[Project page]](https://diffusion-policy.cs.columbia.edu/)
+[[Paper]](https://diffusion-policy.cs.columbia.edu/#paper)
+[[Data]](https://diffusion-policy.cs.columbia.edu/data/)
+[[Colab (state)]](https://colab.research.google.com/drive/1gxdkgRVfM55zihY9TFLja97cSVZOZq2B?usp=sharing)
+[[Colab (vision)]](https://colab.research.google.com/drive/18GIHeOQ5DyjMN8iIRZL2EKZ0745NLIpg?usp=sharing)
 
-Kode resmi untuk paper [DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sampling in Around 10 Steps](https://arxiv.org/abs/2206.00927) (**Neurips 2022 Oral**) dan [DPM-Solver++: Fast Solver for Guided Sampling of Diffusion Probabilistic Models](https://arxiv.org/abs/2211.01095) oleh [Cheng Lu](https://luchengthu.github.io/), [Yuhao Zhou](https://yuhaoz.com/), [Fan Bao](https://baofff.github.io/), [Jianfei Chen](https://ml.cs.tsinghua.edu.cn/~jianfei/), [Chongxuan Li](https://zhenxuan00.github.io/) dan [Jun Zhu](https://ml.cs.tsinghua.edu.cn/~jun/index.shtml).
 
---------------------
+[Cheng Chi](http://cheng-chi.github.io/)<sup>1</sup>,
+[Siyuan Feng](https://www.cs.cmu.edu/~sfeng/)<sup>2</sup>,
+[Yilun Du](https://yilundu.github.io/)<sup>3</sup>,
+[Zhenjia Xu](https://www.zhenjiaxu.com/)<sup>1</sup>,
+[Eric Cousineau](https://www.eacousineau.com/)<sup>2</sup>,
+[Benjamin Burchfiel](http://www.benburchfiel.com/)<sup>2</sup>,
+[Shuran Song](https://www.cs.columbia.edu/~shurans/)<sup>1</sup>
 
-## 📖 Pengenalan DPM-Solver++ 2M
+<sup>1</sup>Columbia University,
+<sup>2</sup>Toyota Research Institute,
+<sup>3</sup>MIT
 
-DPM-Solver++ adalah versi perbaikan dari DPM-Solver yang dirancang untuk mempercepat sampling pada diffusion probabilistic models. **DPM-Solver++ 2M** mengacu pada konfigurasi khusus:
+<img src="media/teaser.png" alt="drawing" width="100%"/>
+<img src="media/multimodal_sim.png" alt="drawing" width="100%"/>
 
-- **DPM-Solver++**: Algoritma yang menggunakan data prediction model (memprediksi `x_0` / data asli) daripada noise prediction model
-- **2**: Order kedua (second-order) - menggunakan informasi dari 2 langkah sebelumnya
-- **M**: Multistep - metode yang menggunakan informasi dari beberapa langkah sebelumnya (seperti metode Adams-Bashforth)
+## 🛝 Try it out!
+Our self-contained Google Colab notebooks is the easiest way to play with Diffusion Policy. We provide separate notebooks for  [state-based environment](https://colab.research.google.com/drive/1gxdkgRVfM55zihY9TFLja97cSVZOZq2B?usp=sharing) and [vision-based environment](https://colab.research.google.com/drive/18GIHeOQ5DyjMN8iIRZL2EKZ0745NLIpg?usp=sharing).
 
-DPM-Solver++ 2M sangat cocok untuk **guided sampling** (sampling dengan conditioning) terutama dengan guidance scale yang besar, dan dapat menghasilkan sampel berkualitas tinggi dalam **hanya 10-20 langkah evaluasi fungsi**.
+## 🧾 Checkout our experiment logs!
+For each experiment used to generate Table I,II and IV in the [paper](https://diffusion-policy.cs.columbia.edu/#paper), we provide:
+1. A `config.yaml` that contains all parameters needed to reproduce the experiment.
+2. Detailed training/eval `logs.json.txt` for every training step.
+3. Checkpoints for the best `epoch=*-test_mean_score=*.ckpt` and last `latest.ckpt` epoch of each run.
 
-### Konsep Dasar
+Experiment logs are hosted on our website as nested directories in format:
+`https://diffusion-policy.cs.columbia.edu/data/experiments/<image|low_dim>/<task>/<method>/`
 
-#### Apa itu Diffusion Probabilistic Model?
-
-Diffusion model adalah model generatif yang mempelajari proses denoising untuk menghasilkan data baru. Proses ini dapat dimodelkan sebagai persamaan diferensial biasa (ODE):
-
+Within each experiment directory you may find:
 ```
-dx/dt = f(x, t)
+.
+├── config.yaml
+├── metrics
+│   └── logs.json.txt
+├── train_0
+│   ├── checkpoints
+│   │   ├── epoch=0300-test_mean_score=1.000.ckpt
+│   │   └── latest.ckpt
+│   └── logs.json.txt
+├── train_1
+│   ├── checkpoints
+│   │   ├── epoch=0250-test_mean_score=1.000.ckpt
+│   │   └── latest.ckpt
+│   └── logs.json.txt
+└── train_2
+    ├── checkpoints
+    │   ├── epoch=0250-test_mean_score=1.000.ckpt
+    │   └── latest.ckpt
+    └── logs.json.txt
 ```
+The `metrics/logs.json.txt` file aggregates evaluation metrics from all 3 training runs every 50 epochs using `multirun_metrics.py`. The numbers reported in the paper correspond to `max` and `k_min_train_loss` aggregation keys.
 
-dimana:
-- `x` adalah data pada waktu `t`
-- `f(x, t)` adalah fungsi drift yang memodelkan arah perubahan data
+To download all files in a subdirectory, use:
 
-#### Perbedaan DPM-Solver vs DPM-Solver++
-
-**DPM-Solver** (original):
-- Menggunakan noise prediction model: `ε_θ(x_t, t)` → memprediksi noise yang ditambahkan
-- Formulasi ODE dalam ruang noise
-
-**DPM-Solver++** (improved):
-- Menggunakan data prediction model: `x_θ(x_t, t)` → memprediksi data asli `x_0`
-- Formulasi ODE yang lebih stabil, terutama untuk guided sampling
-- Mengurangi error akumulasi pada guidance scale besar
-
-#### Mengapa Multistep Order 2?
-
-1. **Multistep**: Menggunakan informasi dari langkah-langkah sebelumnya untuk estimasi yang lebih akurat
-   - Analog dengan metode Adams-Bashforth dalam numerik
-   - Mengurangi jumlah evaluasi fungsi model yang diperlukan
-
-2. **Order 2**: Menggunakan informasi dari 2 langkah sebelumnya
-   - Balance antara akurasi dan efisiensi
-   - Stabil untuk guided sampling dengan guidance scale besar
-   - Lebih stabil daripada order 3 untuk guided sampling
-
----
-
-## 🔬 Penjelasan Algoritma DPM-Solver++ 2M
-
-### 1. Persamaan Dasar
-
-Untuk diffusion model dengan noise schedule VP (Variance Preserving), forward process didefinisikan sebagai:
-
-```
-q(x_t | x_0) = N(α_t · x_0, σ_t² · I)
-```
-
-dimana:
-- `α_t = √(α̂_t)` adalah koefisien mean
-- `σ_t` adalah standar deviasi noise
-- `λ_t = log(α_t) - log(σ_t)` adalah half-logSNR
-
-### 2. Formulasi ODE untuk DPM-Solver++
-
-DPM-Solver++ memformulasikan ODE dalam bentuk yang lebih stabil:
-
-**Untuk data prediction model** (`x_θ` memprediksi `x_0`):
-
-```
-dx/dt = -σ_t' / σ_t · (x - α_t · x_θ(x_t, t))
+```console
+$ wget --recursive --no-parent --no-host-directories --relative --reject="index.html*" https://diffusion-policy.cs.columbia.edu/data/experiments/low_dim/square_ph/diffusion_policy_cnn/
 ```
 
-dimana `'` menandakan turunan terhadap `t`.
-
-### 3. Multistep DPM-Solver-2 Update
-
-Dalam implementasi, `multistep_dpm_solver_second_update` melakukan update dari waktu `t_prev_0` ke `t` menggunakan informasi dari dua langkah sebelumnya:
-
-```python
-# Dari kode: dpm_solver_pytorch.py baris 796-852
-def multistep_dpm_solver_second_update(self, x, model_prev_list, t_prev_list, t):
-    """
-    Update menggunakan:
-    - model_prev_1: prediksi model pada waktu t_prev_1
-    - model_prev_0: prediksi model pada waktu t_prev_0
-    - x: nilai saat ini pada t_prev_0
-    """
-    
-    # Hitung lambda values (half-logSNR)
-    λ_prev_1 = λ(t_prev_1)
-    λ_prev_0 = λ(t_prev_0)  
-    λ_t = λ(t)
-    
-    # Hitung interval dalam ruang lambda
-    h_0 = λ_prev_0 - λ_prev_1  # interval sebelumnya
-    h = λ_t - λ_prev_0         # interval saat ini
-    r0 = h_0 / h               # rasio interval
-    
-    # Estimasi turunan menggunakan finite difference
-    D1_0 = (1 / r0) * (model_prev_0 - model_prev_1)
-    
-    # Update untuk DPM-Solver++
-    φ_1 = expm1(-h)  # exp(-h) - 1
-    x_t = (σ_t / σ_prev_0) * x - (α_t * φ_1) * model_prev_0 - 0.5 * (α_t * φ_1) * D1_0
+## 🛠️ Installation
+### 🖥️ Simulation
+To reproduce our simulation benchmark results, install our conda environment on a Linux machine with Nvidia GPU. On Ubuntu 20.04 you need to install the following apt packages for mujoco:
+```console
+$ sudo apt install -y libosmesa6-dev libgl1-mesa-glx libglfw3 patchelf
 ```
 
-**Penjelasan formula update:**
-
-1. **Term pertama** `(σ_t / σ_prev_0) * x`: 
-   - Skala nilai saat ini sesuai dengan perubahan noise schedule
-
-2. **Term kedua** `(α_t * φ_1) * model_prev_0`:
-   - Koreksi utama berdasarkan prediksi data pada langkah sebelumnya
-   - `φ_1 = exp(-h) - 1` adalah koefisien dari ekspansi eksponensial
-
-3. **Term ketiga** `0.5 * (α_t * φ_1) * D1_0`:
-   - Koreksi orde kedua menggunakan estimasi turunan
-   - `D1_0` adalah finite difference approximation dari turunan model
-   - Koefisien `0.5` berasal dari ekspansi Taylor orde kedua
-
-### 4. Algoritma Sampling Lengkap
-
-```python
-# Pseudocode untuk sampling dengan DPM-Solver++ 2M
-def sample_dpm_solver_2m(x_T, steps=20):
-    # Inisialisasi
-    timesteps = generate_timesteps(steps)  # Membagi waktu menjadi steps interval
-    x = x_T  # Mulai dari noise
-    model_prev_list = []
-    t_prev_list = []
-    
-    # Langkah 1: Inisialisasi dengan order 1 (DDIM)
-    t = timesteps[0]
-    model_prev_list.append(model_fn(x, t))
-    t_prev_list.append(t)
-    
-    # Langkah 2: Update pertama dengan order 1
-    t = timesteps[1]
-    x = dpm_solver_first_update(x, t_prev_list[-1], t, model_prev_list[-1])
-    model_prev_list.append(model_fn(x, t))
-    t_prev_list.append(t)
-    
-    # Langkah 3 sampai akhir: Update dengan multistep order 2
-    for step in range(2, steps + 1):
-        t = timesteps[step]
-        x = multistep_dpm_solver_second_update(
-            x, 
-            model_prev_list,  # Memakai 2 prediksi sebelumnya
-            t_prev_list, 
-            t
-        )
-        
-        # Update history
-        t_prev_list.append(t)
-        model_prev_list.append(model_fn(x, t))
-        
-        # Hapus elemen lama jika diperlukan
-        if len(model_prev_list) > 2:
-            model_prev_list = model_prev_list[-2:]
-            t_prev_list = t_prev_list[-2:]
-    
-    return x  # Data hasil denoising
+We recommend [Mambaforge](https://github.com/conda-forge/miniforge#mambaforge) instead of the standard anaconda distribution for faster installation: 
+```console
+$ mamba env create -f conda_environment.yaml
 ```
 
-### 5. Mengapa 2M Stabil untuk Guided Sampling?
-
-1. **Data Prediction**: Memprediksi `x_0` langsung lebih stabil daripada memprediksi noise, terutama saat guidance scale besar
-
-2. **Multistep**: Menggunakan informasi dari langkah sebelumnya mengurangi error akumulasi
-
-3. **Order 2**: Balance optimal - order 1 terlalu lambat, order 3 bisa tidak stabil untuk guidance scale besar
-
-4. **Koefisien Eksponensial**: Formula `φ_1 = exp(-h) - 1` mempertimbangkan struktur eksponensial dari noise schedule
-
----
-
-## 💻 Implementasi dalam Kode
-
-### Lokasi Implementasi Utama
-
-**File**: `dpm_solver_pytorch.py`
-
-1. **Kelas DPM_Solver** (baris 341-405):
-    ```python
-   class DPM_Solver:
-       def __init__(self, model_fn, noise_schedule, algorithm_type="dpmsolver++"):
-           # algorithm_type="dpmsolver++" untuk menggunakan data prediction
-   ```
-
-2. **Multistep Update Order 2** (baris 796-852):
-   ```796:852:dpm_solver_pytorch.py
-   def multistep_dpm_solver_second_update(self, x, model_prev_list, t_prev_list, t, solver_type="dpmsolver"):
-       """
-       Multistep solver DPM-Solver-2 dari waktu t_prev_list[-1] ke waktu t.
-       """
-       # Implementasi formula di atas
-   ```
-
-3. **Sampling Function** (baris 1171-1203):
-   ```1171:1203:dpm_solver_pytorch.py
-   elif method == 'multistep':
-       # Inisialisasi dengan order 1
-       for step in range(1, order):
-           # Update dengan lower order
-       
-       # Update dengan order 2 untuk langkah selanjutnya
-       for step in range(order, steps + 1):
-           x = self.multistep_dpm_solver_update(...)
-   ```
-
-### Cara Menggunakan DPM-Solver++ 2M
-
-```python
-from dpm_solver_pytorch import NoiseScheduleVP, model_wrapper, DPM_Solver
-
-# 1. Definisikan noise schedule
-noise_schedule = NoiseScheduleVP(schedule='discrete', betas=betas)
-
-# 2. Wrap model ke continuous-time noise prediction model
-model_fn = model_wrapper(
-    model,
-    noise_schedule,
-    model_type="noise",  # Model asli memprediksi noise
-    model_kwargs=model_kwargs,
-    guidance_type="classifier-free",  # Untuk guided sampling
-    condition=condition,
-    unconditional_condition=unconditional_condition,
-    guidance_scale=guidance_scale,
-)
-
-# 3. Definisikan DPM-Solver dengan algorithm_type="dpmsolver++"
-dpm_solver = DPM_Solver(
-    model_fn, 
-    noise_schedule, 
-    algorithm_type="dpmsolver++"  # Menggunakan data prediction
-)
-
-# 4. Sample dengan multistep order 2
-x_sample = dpm_solver.sample(
-    x_T,                    # Noise awal
-    steps=20,               # Jumlah langkah (10-20 sudah cukup)
-    order=2,                # Order 2 untuk multistep
-    skip_type="time_uniform",  # Uniform spacing
-    method="multistep",     # Metode multistep
-)
+but you can use conda as well: 
+```console
+$ conda env create -f conda_environment.yaml
 ```
 
----
+The `conda_environment_macos.yaml` file is only for development on MacOS and does not have full support for benchmarks.
 
-## 📊 Kapan Menggunakan DPM-Solver++ 2M?
+### 🦾 Real Robot
+Hardware (for Push-T):
+* 1x [UR5-CB3](https://www.universal-robots.com/cb3) or [UR5e](https://www.universal-robots.com/products/ur5-robot/) ([RTDE Interface](https://www.universal-robots.com/articles/ur/interface-communication/real-time-data-exchange-rtde-guide/) is required)
+* 2x [RealSense D415](https://www.intelrealsense.com/depth-camera-d415/)
+* 1x [3Dconnexion SpaceMouse](https://3dconnexion.com/us/product/spacemouse-wireless/) (for teleop)
+* 1x [Millibar Robotics Manual Tool Changer](https://www.millibar.com/manual-tool-changer/) (only need robot side)
+* 1x 3D printed [End effector](https://cad.onshape.com/documents/a818888644a15afa6cc68ee5/w/2885b48b018cda84f425beca/e/3e8771c2124cee024edd2fed?renderMode=0&uiState=63ffcba6631ca919895e64e5)
+* 1x 3D printed [T-block](https://cad.onshape.com/documents/f1140134e38f6ed6902648d5/w/a78cf81827600e4ff4058d03/e/f35f57fb7589f72e05c76caf?renderMode=0&uiState=63ffcbc9af4a881b344898ee)
+* USB-C cables and screws for RealSense
 
-### ✅ Direkomendasikan untuk:
+Software:
+* Ubuntu 20.04.3 (tested)
+* Mujoco dependencies: 
+`sudo apt install libosmesa6-dev libgl1-mesa-glx libglfw3 patchelf`
+* [RealSense SDK](https://github.com/IntelRealSense/librealsense/blob/master/doc/distribution_linux.md)
+* Spacemouse dependencies: 
+`sudo apt install libspnav-dev spacenavd; sudo systemctl start spacenavd`
+* Conda environment `mamba env create -f conda_environment_real.yaml`
 
-1. **Guided Sampling dengan Guidance Scale Besar**
-   - Classifier-free guidance dengan `guidance_scale > 5`
-   - Classifier guidance
-   - Stable Diffusion dengan prompt conditioning
-
-2. **High-Resolution Images**
-   - Resolusi ≥ 512x512
-   - Lebih stabil daripada singlestep untuk high-res
-
-3. **Latent-Space Diffusion Models**
-   - Stable Diffusion
-   - Model lain yang bekerja di latent space
-
-### ⚠️ Alternatif untuk:
-
-1. **Unconditional Sampling**
-   - Lebih baik gunakan order 3 untuk kualitas lebih tinggi
-   - Order 2 juga bisa bekerja, tapi order 3 lebih optimal
-
-2. **Low-Resolution Images** (CIFAR-10, dll)
-   - Gunakan `skip_type='logSNR'` daripada `'time_uniform'`
-   - Order 2 tetap baik, tapi order 3 bisa lebih baik
-
-3. **Pixel-Space Diffusion Models**
-   - Pertimbangkan `correcting_x0_fn="dynamic_thresholding"` untuk kualitas lebih baik
-   - Hanya untuk pixel-space, bukan latent-space
-
----
-
-## 🎯 Parameter Penting
-
-### Parameter Utama
-
-| Parameter | Nilai Default | Penjelasan |
-|-----------|---------------|------------|
-| `algorithm_type` | `"dpmsolver++"` | Algoritma yang digunakan (++ untuk data prediction) |
-| `order` | `2` | Order solver (2 untuk 2M) |
-| `method` | `"multistep"` | Metode sampling (multistep untuk 2M) |
-| `steps` | `20` | Jumlah evaluasi fungsi (10-20 cukup) |
-| `skip_type` | `"time_uniform"` | Cara membagi timesteps |
-
-### Rekomendasi Steps
-
-- **Steps ≤ 10**: Sample cepat, kualitas cukup baik
-- **Steps = 15**: Kualitas baik, balance optimal
-- **Steps = 20**: Kualitas sangat baik (direkomendasikan)
-- **Steps = 50**: Kualitas konvergen maksimal
-
-### Skip Type
-
-- **`"time_uniform"`**: Uniform dalam ruang waktu → **Direkomendasikan untuk high-res**
-- **`"logSNR"`**: Uniform dalam ruang logSNR → Direkomendasikan untuk low-res
-- **`"time_quadratic"`**: Quadratic spacing
-
----
-
-## 📝 Contoh Lengkap: Stable Diffusion dengan DPM-Solver++ 2M
-
-```python
-import torch
-from dpm_solver_pytorch import NoiseScheduleVP, model_wrapper, DPM_Solver
-from diffusers import StableDiffusionPipeline
-
-# Load model Stable Diffusion
-pipe = StableDiffusionPipeline.from_pretrained(
-    "stabilityai/stable-diffusion-2-1",
-    torch_dtype=torch.float16
-)
-pipe = pipe.to("cuda")
-
-# Definisikan noise schedule
-betas = pipe.scheduler.betas  # Array beta dari scheduler
-noise_schedule = NoiseScheduleVP(schedule='discrete', betas=betas)
-
-# Wrap model untuk DPM-Solver
-def model_fn(x, t_continuous):
-    """Wrapper untuk model Stable Diffusion"""
-    # Convert t_continuous ke discrete timestep
-    timestep = (t_continuous - 1.0 / len(betas)) * len(betas)
-    timestep = torch.clamp(timestep.long(), min=0, max=len(betas) - 1)
-    
-    # Panggil model
-    with torch.no_grad():
-        noise_pred = pipe.unet(x, timestep, encoder_hidden_states=text_embeddings).sample
-    
-    return noise_pred
-
-# Definisikan DPM-Solver++ 2M
-dpm_solver = DPM_Solver(
-    model_fn,
-    noise_schedule,
-    algorithm_type="dpmsolver++"
-)
-
-# Encode prompt
-prompt = "a beautiful landscape painting"
-text_embeddings = pipe._encode_prompt(prompt, device="cuda", num_images_per_prompt=1)
-
-# Sample dengan DPM-Solver++ 2M
-latents = torch.randn((1, 4, 64, 64), device="cuda")
-latents = latents * pipe.scheduler.init_noise_sigma
-
-latents = dpm_solver.sample(
-    latents,
-    steps=20,
-    order=2,
-    skip_type="time_uniform",
-    method="multistep",
-)
-
-# Decode ke gambar
-image = pipe.vae.decode(latents / 0.18215).sample
-image = (image / 2 + 0.5).clamp(0, 1)
+## 🖥️ Reproducing Simulation Benchmark Results 
+### Download Training Data
+Under the repo root, create data subdirectory:
+```console
+[diffusion_policy]$ mkdir data && cd data
 ```
 
----
-
-## 🔍 Perbandingan dengan Metode Lain
-
-| Metode | Steps | Kualitas | Waktu | Kestabilan Guidance |
-|--------|-------|----------|-------|---------------------|
-| **DDPM** | 1000 | ⭐⭐⭐⭐⭐ | 🐌🐌🐌 | ⭐⭐⭐ |
-| **DDIM** | 50 | ⭐⭐⭐⭐ | 🐌🐌 | ⭐⭐⭐ |
-| **DPM-Solver 1** | 20 | ⭐⭐⭐⭐ | ⚡⚡ | ⭐⭐⭐ |
-| **DPM-Solver++ 1S** | 20 | ⭐⭐⭐⭐ | ⚡⚡ | ⭐⭐⭐⭐ |
-| **DPM-Solver++ 2M** | 20 | ⭐⭐⭐⭐⭐ | ⚡⚡ | ⭐⭐⭐⭐⭐ |
-| **DPM-Solver++ 3M** | 20 | ⭐⭐⭐⭐⭐ | ⚡⚡ | ⭐⭐⭐⭐ |
-
-**2M adalah pilihan terbaik untuk guided sampling!**
-
----
-
-## 📚 Referensi dan Paper
-
-### Paper Utama
-
-1. **DPM-Solver**:
-   - [DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sampling in Around 10 Steps](https://arxiv.org/abs/2206.00927)
-   - NeurIPS 2022 Oral
-
-2. **DPM-Solver++**:
-   - [DPM-Solver++: Fast Solver for Guided Sampling of Diffusion Probabilistic Models](https://arxiv.org/abs/2211.01095)
-
-### Implementasi di Library Lain
-
-- [🤗 Diffusers](https://github.com/huggingface/diffusers) - `DPMSolverMultistepScheduler`
-- [Stable-Diffusion-WebUI](https://github.com/AUTOMATIC1111/stable-diffusion-webui)
-- [k-diffusion](https://github.com/crowsonkb/k-diffusion)
-
----
-
-## 🚀 Quick Start
-
-### Instalasi
-
-```bash
-git clone https://github.com/LuChengTHU/dpm-solver.git
-cd dpm-solver
+Download the corresponding zip file from [https://diffusion-policy.cs.columbia.edu/data/training/](https://diffusion-policy.cs.columbia.edu/data/training/)
+```console
+[data]$ wget https://diffusion-policy.cs.columbia.edu/data/training/pusht.zip
 ```
 
-Tidak perlu instalasi khusus - cukup import file `dpm_solver_pytorch.py` atau `dpm_solver_jax.py` ke proyek Anda!
-
-### Contoh Minimal
-
-```python
-from dpm_solver_pytorch import NoiseScheduleVP, model_wrapper, DPM_Solver
-
-# Setup
-noise_schedule = NoiseScheduleVP(schedule='discrete', betas=your_betas)
-model_fn = model_wrapper(your_model, noise_schedule, model_type="noise")
-dpm_solver = DPM_Solver(model_fn, noise_schedule, algorithm_type="dpmsolver++")
-
-# Sample
-x_sample = dpm_solver.sample(
-    x_T, steps=20, order=2, method="multistep"
-)
+Extract training data:
+```console
+[data]$ unzip pusht.zip && rm -f pusht.zip && cd ..
 ```
 
----
+Grab config file for the corresponding experiment:
+```console
+[diffusion_policy]$ wget -O image_pusht_diffusion_policy_cnn.yaml https://diffusion-policy.cs.columbia.edu/data/experiments/image/pusht/diffusion_policy_cnn/config.yaml
+```
 
-## 📖 Dokumentasi Lebih Lanjut
+### Running for a single seed
+Activate conda environment and login to [wandb](https://wandb.ai) (if you haven't already).
+```console
+[diffusion_policy]$ conda activate robodiff
+(robodiff)[diffusion_policy]$ wandb login
+```
 
-Lihat bagian dokumentasi di bawah untuk:
-- [Penjelasan detail noise schedule](#1-define-the-noise-schedule)
-- [Cara wrap model yang berbeda](#2-wrap-your-model-to-a-continuous-time-noise-predicition-model)
-- [Opsi sampling lainnya](#3-define-dpm-solver)
-- [Contoh untuk guided sampling](#example-classifier-free-guidance-sampling-by-dpm-solver)
+Launch training with seed 42 on GPU 0.
+```console
+(robodiff)[diffusion_policy]$ python train.py --config-dir=. --config-name=image_pusht_diffusion_policy_cnn.yaml training.seed=42 training.device=cuda:0 hydra.run.dir='data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}'
+```
 
----
+This will create a directory in format `data/outputs/yyyy.mm.dd/hh.mm.ss_<method_name>_<task_name>` where configs, logs and checkpoints are written to. The policy will be evaluated every 50 epochs with the success rate logged as `test/mean_score` on wandb, as well as videos for some rollouts.
+```console
+(robodiff)[diffusion_policy]$ tree data/outputs/2023.03.01/20.02.03_train_diffusion_unet_hybrid_pusht_image -I wandb
+data/outputs/2023.03.01/20.02.03_train_diffusion_unet_hybrid_pusht_image
+├── checkpoints
+│   ├── epoch=0000-test_mean_score=0.134.ckpt
+│   └── latest.ckpt
+├── .hydra
+│   ├── config.yaml
+│   ├── hydra.yaml
+│   └── overrides.yaml
+├── logs.json.txt
+├── media
+│   ├── 2k5u6wli.mp4
+│   ├── 2kvovxms.mp4
+│   ├── 2pxd9f6b.mp4
+│   ├── 2q5gjt5f.mp4
+│   ├── 2sawbf6m.mp4
+│   └── 538ubl79.mp4
+└── train.log
 
-## 📄 License
+3 directories, 13 files
+```
 
-Lihat file [LICENSE](LICENSE) untuk detail lisensi.
+### Konfigurasi Training untuk Environment Kitchen (Low-Dim)
 
----
+Untuk lingkungan **Kitchen (low-dim)**, konfigurasi training diffusion policy berbasis **Diffusion Transformer** dirangkum pada tabel berikut (diambil dari `diffusion_policy/config/task/kitchen_lowdim.yaml` dan `diffusion_policy/config/train_diffusion_transformer_lowdim_kitchen_workspace.yaml`):
 
-## 🙏 Citation
+| **Komponen** | **Konfigurasi untuk Kitchen (Low-Dim)** |
+| --- | --- |
+| **Task & Observasi** | name: `kitchen_lowdim`; `obs_dim = 60`; `action_dim = 9`; `keypoint_dim = 3` |
+| **Dataset** | `dataset_dir = data/kitchen`; class: `KitchenLowdimDataset`; `horizon = 16`; `pad_before = n_obs_steps - 1`; `pad_after = n_action_steps - 1`; `val_ratio = 0.02` |
+| **EnvRunner** | class: `KitchenLowdimRunner`; `n_train = 6`; `n_test = 50`; `max_steps = 280`; `n_obs_steps = 4`; `n_action_steps = 8`; `fps = 12.5` |
+| **Workspace** | name: `train_diffusion_transformer_lowdim`; target: `TrainDiffusionTransformerLowdimWorkspace` |
+| **Policy** | class: `DiffusionTransformerLowdimPolicy`; horizon: `16`; `n_obs_steps = 4`; `n_action_steps = 8`; `obs_as_cond = True` |
+| **Model (Diffusion Transformer)** | class: `TransformerForDiffusion`; `input_dim = action_dim` (karena `obs_as_cond=True`); `output_dim = input_dim`; `cond_dim = obs_dim = 60`; `n_layer = 8`; `n_head = 4`; `n_emb = 768`; `p_drop_emb = 0.0`; `p_drop_attn = 0.1`; `causal_attn = True`; `time_as_cond = True` |
+| **Noise Scheduler (Diffusion)** | type: `DDPMScheduler`; `num_train_timesteps = 100`; `beta_start = 1e-4`; `beta_end = 0.02`; `beta_schedule = squaredcos_cap_v2`; `variance_type = fixed_small`; `clip_sample = True`; `prediction_type = epsilon`; `num_inference_steps = 100` |
+| **Dataloader (train/val)** | `batch_size = 256`; `num_workers = 1`; `shuffle = True` (train) / `False` (val); `pin_memory = True`; `persistent_workers = False` |
+| **Optimizer** | AdamW dengan `learning_rate = 1e-4`; `weight_decay = 1e-3`; `betas = (0.9, 0.95)` |
+| **Training Schedule** | `device = "cuda:0"`; `seed = 42`; `num_epochs = 5000`; `gradient_accumulate_every = 1`; `lr_scheduler = cosine`; `lr_warmup_steps = 1000` |
+| **Eval & Checkpoint** | `rollout_every = 50`; `val_every = 1`; `sample_every = 5`; `checkpoint_every = 50`; menyimpan `latest.ckpt` dan Top-K berdasarkan `test_mean_score` |
 
-Jika Anda menggunakan kode ini dalam penelitian, mohon cite:
+Untuk menjalankan eksperimen ini:
 
-```bibtex
-@article{lu2022dpm,
-  title={DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sampling in Around 10 Steps},
-  author={Lu, Cheng and Zhou, Yuhao and Bao, Fan and Chen, Jianfei and Li, Chongxuan and Zhu, Jun},
-  journal={arXiv preprint arXiv:2206.00927},
-  year={2022}
-}
+```console
+(robodiff)[diffusion_policy]$ python train.py --config-dir=diffusion_policy/config --config-name=train_diffusion_transformer_lowdim_kitchen_workspace training.device=cuda:0
+```
 
-@article{lu2022dpmplusplus,
-  title={DPM-Solver++: Fast Solver for Guided Sampling of Diffusion Probabilistic Models},
-  author={Lu, Cheng and Zhou, Yuhao and Bao, Fan and Chen, Jianfei and Li, Chongxuan and Zhu, Jun},
-  journal={arXiv preprint arXiv:2211.01095},
-  year={2022}
+### Running for multiple seeds
+Launch local ray cluster. For large scale experiments, you might want to setup an [AWS cluster with autoscaling](https://docs.ray.io/en/master/cluster/vms/user-guides/launching-clusters/aws.html). All other commands remain the same.
+```console
+(robodiff)[diffusion_policy]$ export CUDA_VISIBLE_DEVICES=0,1,2  # select GPUs to be managed by the ray cluster
+(robodiff)[diffusion_policy]$ ray start --head --num-gpus=3
+```
+
+Launch a ray client which will start 3 training workers (3 seeds) and 1 metrics monitor worker.
+```console
+(robodiff)[diffusion_policy]$ python ray_train_multirun.py --config-dir=. --config-name=image_pusht_diffusion_policy_cnn.yaml --seeds=42,43,44 --monitor_key=test/mean_score -- multi_run.run_dir='data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}' multi_run.wandb_name_base='${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}'
+```
+
+In addition to the wandb log written by each training worker individually, the metrics monitor worker will log to wandb project `diffusion_policy_metrics` for the metrics aggregated from all 3 training runs. Local config, logs and checkpoints will be written to `data/outputs/yyyy.mm.dd/hh.mm.ss_<method_name>_<task_name>` in a directory structure identical to our [training logs](https://diffusion-policy.cs.columbia.edu/data/experiments/):
+```console
+(robodiff)[diffusion_policy]$ tree data/outputs/2023.03.01/22.13.58_train_diffusion_unet_hybrid_pusht_image -I 'wandb|media'
+data/outputs/2023.03.01/22.13.58_train_diffusion_unet_hybrid_pusht_image
+├── config.yaml
+├── metrics
+│   ├── logs.json.txt
+│   ├── metrics.json
+│   └── metrics.log
+├── train_0
+│   ├── checkpoints
+│   │   ├── epoch=0000-test_mean_score=0.174.ckpt
+│   │   └── latest.ckpt
+│   ├── logs.json.txt
+│   └── train.log
+├── train_1
+│   ├── checkpoints
+│   │   ├── epoch=0000-test_mean_score=0.131.ckpt
+│   │   └── latest.ckpt
+│   ├── logs.json.txt
+│   └── train.log
+└── train_2
+    ├── checkpoints
+    │   ├── epoch=0000-test_mean_score=0.105.ckpt
+    │   └── latest.ckpt
+    ├── logs.json.txt
+    └── train.log
+
+7 directories, 16 files
+```
+### 🆕 Evaluate Pre-trained Checkpoints
+Download a checkpoint from the published training log folders, such as [https://diffusion-policy.cs.columbia.edu/data/experiments/low_dim/pusht/diffusion_policy_cnn/train_0/checkpoints/epoch=0550-test_mean_score=0.969.ckpt](https://diffusion-policy.cs.columbia.edu/data/experiments/low_dim/pusht/diffusion_policy_cnn/train_0/checkpoints/epoch=0550-test_mean_score=0.969.ckpt).
+
+Run the evaluation script:
+```console
+(robodiff)[diffusion_policy]$ python eval.py --checkpoint data/0550-test_mean_score=0.969.ckpt --output_dir data/pusht_eval_output --device cuda:0
+```
+
+This will generate the following directory structure:
+```console
+(robodiff)[diffusion_policy]$ tree data/pusht_eval_output
+data/pusht_eval_output
+├── eval_log.json
+└── media
+    ├── 1fxtno84.mp4
+    ├── 224l7jqd.mp4
+    ├── 2fo4btlf.mp4
+    ├── 2in4cn7a.mp4
+    ├── 34b3o2qq.mp4
+    └── 3p7jqn32.mp4
+
+1 directory, 7 files
+```
+
+`eval_log.json` contains metrics that is logged to wandb during training:
+```console
+(robodiff)[diffusion_policy]$ cat data/pusht_eval_output/eval_log.json
+{
+  "test/mean_score": 0.9150393806777066,
+  "test/sim_max_reward_4300000": 1.0,
+  "test/sim_max_reward_4300001": 0.9872969750774386,
+...
+  "train/sim_video_1": "data/pusht_eval_output//media/2fo4btlf.mp4"
 }
 ```
 
----
+## 🦾 Demo, Training and Eval on a Real Robot
+Make sure your UR5 robot is running and accepting command from its network interface (emergency stop button within reach at all time), your RealSense cameras plugged in to your workstation (tested with `realsense-viewer`) and your SpaceMouse connected with the `spacenavd` daemon running (verify with `systemctl status spacenavd`).
 
----
-
-# 📚 Dokumentasi Teknis Lengkap
-
-## 1. Definisi Noise Schedule
-
-Kita mendukung noise schedule VP (Variance Preserving) untuk discrete-time dan continuous-time DPMs.
-
-### 1.1. Discrete-time DPMs
-  
-Kita mendukung piecewise linear interpolation dari `log(α_t)` dalam kelas `NoiseScheduleVP`.
-
-Kita memerlukan array `β_i` atau array `α̂_i` (lihat [DDPM](https://arxiv.org/abs/2006.11239) untuk detail). Perhatikan bahwa `α̂_i` dalam DDPM berbeda dari `α_t` dalam DPM-Solver:
-
-```
-α̂_i = ∏(1 - β_k)
-α_{t_i} = √(α̂_i)
+Start the demonstration collection script. Press "C" to start recording. Use SpaceMouse to move the robot. Press "S" to stop recording. 
+```console
+(robodiff)[diffusion_policy]$ python demo_real_robot.py -o data/demo_pusht_real --robot_ip 192.168.0.204
 ```
 
-Definisikan discrete-time noise schedule dengan array `β_i`:
-```python
-noise_schedule = NoiseScheduleVP(schedule='discrete', betas=betas)
+This should result in a demonstration dataset in `data/demo_pusht_real` with in the same structure as our example [real Push-T training dataset](https://diffusion-policy.cs.columbia.edu/data/training/pusht_real.zip).
+
+To train a Diffusion Policy, launch training with config:
+```console
+(robodiff)[diffusion_policy]$ python train.py --config-name=train_diffusion_unet_real_image_workspace task.dataset_path=data/demo_pusht_real
+```
+Edit [`diffusion_policy/config/task/real_pusht_image.yaml`](./diffusion_policy/config/task/real_pusht_image.yaml) if your camera setup is different.
+
+Assuming the training has finished and you have a checkpoint at `data/outputs/blah/checkpoints/latest.ckpt`, launch the evaluation script with:
+```console
+python eval_real_robot.py -i data/outputs/blah/checkpoints/latest.ckpt -o data/eval_pusht_real --robot_ip 192.168.0.204
+```
+Press "C" to start evaluation (handing control over to the policy). Press "S" to stop the current episode.
+
+## 🗺️ Codebase Tutorial
+This codebase is structured under the requirement that:
+1. implementing `N` tasks and `M` methods will only require `O(N+M)` amount of code instead of `O(N*M)`
+2. while retaining maximum flexibility.
+
+To achieve this requirement, we 
+1. maintained a simple unified interface between tasks and methods and 
+2. made the implementation of the tasks and the methods independent of each other. 
+
+These design decisions come at the cost of code repetition between the tasks and the methods. However, we believe that the benefit of being able to add/modify task/methods without affecting the remainder and being able understand a task/method by reading the code linearly outweighs the cost of copying and pasting 😊.
+
+### The Split
+On the task side, we have:
+* `Dataset`: adapts a (third-party) dataset to the interface.
+* `EnvRunner`: executes a `Policy` that accepts the interface and produce logs and metrics.
+* `config/task/<task_name>.yaml`: contains all information needed to construct `Dataset` and `EnvRunner`.
+* (optional) `Env`: an `gym==0.21.0` compatible class that encapsulates the task environment.
+
+On the policy side, we have:
+* `Policy`: implements inference according to the interface and part of the training process.
+* `Workspace`: manages the life-cycle of training and evaluation (interleaved) of a method. 
+* `config/<workspace_name>.yaml`: contains all information needed to construct `Policy` and `Workspace`.
+
+### The Interface
+#### Low Dim
+A [`LowdimPolicy`](./diffusion_policy/policy/base_lowdim_policy.py) takes observation dictionary:
+- `"obs":` Tensor of shape `(B,To,Do)`
+
+and predicts action dictionary:
+- `"action": ` Tensor of shape `(B,Ta,Da)`
+
+A [`LowdimDataset`](./diffusion_policy/dataset/base_dataset.py) returns a sample of dictionary:
+- `"obs":` Tensor of shape `(To, Do)`
+- `"action":` Tensor of shape `(Ta, Da)`
+
+Its `get_normalizer` method returns a [`LinearNormalizer`](./diffusion_policy/model/common/normalizer.py) with keys `"obs","action"`.
+
+The `Policy` handles normalization on GPU with its copy of the `LinearNormalizer`. The parameters of the `LinearNormalizer` is saved as part of the `Policy`'s weights checkpoint.
+
+#### Image
+A [`ImagePolicy`](./diffusion_policy/policy/base_image_policy.py) takes observation dictionary:
+- `"key0":` Tensor of shape `(B,To,*)`
+- `"key1":` Tensor of shape e.g. `(B,To,H,W,3)` ([0,1] float32)
+
+and predicts action dictionary:
+- `"action": ` Tensor of shape `(B,Ta,Da)`
+
+A [`ImageDataset`](./diffusion_policy/dataset/base_dataset.py) returns a sample of dictionary:
+- `"obs":` Dict of
+    - `"key0":` Tensor of shape `(To, *)`
+    - `"key1":` Tensor fo shape `(To,H,W,3)`
+- `"action":` Tensor of shape `(Ta, Da)`
+
+Its `get_normalizer` method returns a [`LinearNormalizer`](./diffusion_policy/model/common/normalizer.py) with keys `"key0","key1","action"`.
+
+#### Example
+```
+To = 3
+Ta = 4
+T = 6
+|o|o|o|
+| | |a|a|a|a|
+|o|o|
+| |a|a|a|a|a|
+| | | | |a|a|
+```
+Terminology in the paper: `varname` in the codebase
+- Observation Horizon: `To|n_obs_steps`
+- Action Horizon: `Ta|n_action_steps`
+- Prediction Horizon: `T|horizon`
+
+The classical (e.g. MDP) single step observation/action formulation is included as a special case where `To=1` and `Ta=1`.
+
+## 🔩 Key Components
+### `Workspace`
+A `Workspace` object encapsulates all states and code needed to run an experiment. 
+* Inherits from [`BaseWorkspace`](./diffusion_policy/workspace/base_workspace.py).
+* A single `OmegaConf` config object generated by `hydra` should contain all information needed to construct the Workspace object and running experiments. This config correspond to `config/<workspace_name>.yaml` + hydra overrides.
+* The `run` method contains the entire pipeline for the experiment.
+* Checkpoints happen at the `Workspace` level. All training states implemented as object attributes are automatically saved by the `save_checkpoint` method.
+* All other states for the experiment should be implemented as local variables in the `run` method.
+
+The entrypoint for training is `train.py` which uses `@hydra.main` decorator. Read [hydra](https://hydra.cc/)'s official documentation for command line arguments and config overrides. For example, the argument `task=<task_name>` will replace the `task` subtree of the config with the content of `config/task/<task_name>.yaml`, thereby selecting the task to run for this experiment.
+
+### `Dataset`
+A `Dataset` object:
+* Inherits from `torch.utils.data.Dataset`.
+* Returns a sample conforming to [the interface](#the-interface) depending on whether the task has Low Dim or Image observations.
+* Has a method `get_normalizer` that returns a `LinearNormalizer` conforming to [the interface](#the-interface).
+
+Normalization is a very common source of bugs during project development. It is sometimes helpful to print out the specific `scale` and `bias` vectors used for each key in the `LinearNormalizer`.
+
+Most of our implementations of `Dataset` uses a combination of [`ReplayBuffer`](#replaybuffer) and [`SequenceSampler`](./diffusion_policy/common/sampler.py) to generate samples. Correctly handling padding at the beginning and the end of each demonstration episode according to `To` and `Ta` is important for good performance. Please read our [`SequenceSampler`](./diffusion_policy/common/sampler.py) before implementing your own sampling method.
+
+### `Policy`
+A `Policy` object:
+* Inherits from `BaseLowdimPolicy` or `BaseImagePolicy`.
+* Has a method `predict_action` that given observation dict, predicts actions conforming to [the interface](#the-interface).
+* Has a method `set_normalizer` that takes in a `LinearNormalizer` and handles observation/action normalization internally in the policy.
+* (optional) Might has a method `compute_loss` that takes in a batch and returns the loss to be optimized.
+* (optional) Usually each `Policy` class correspond to a `Workspace` class due to the differences of training and evaluation process between methods.
+
+### `EnvRunner`
+A `EnvRunner` object abstracts away the subtle differences between different task environments.
+* Has a method `run` that takes a `Policy` object for evaluation, and returns a dict of logs and metrics. Each value should be compatible with `wandb.log`. 
+
+To maximize evaluation speed, we usually vectorize environments using our modification of [`gym.vector.AsyncVectorEnv`](./diffusion_policy/gym_util/async_vector_env.py) which runs each individual environment in a separate process (workaround python GIL). 
+
+⚠️ Since subprocesses are launched using `fork` on linux, you need to be specially careful for environments that creates its OpenGL context during initialization (e.g. robosuite) which, once inherited by the child process memory space, often causes obscure bugs like segmentation fault. As a workaround, you can provide a `dummy_env_fn` that constructs an environment without initializing OpenGL.
+
+### `ReplayBuffer`
+The [`ReplayBuffer`](./diffusion_policy/common/replay_buffer.py) is a key data structure for storing a demonstration dataset both in-memory and on-disk with chunking and compression. It makes heavy use of the [`zarr`](https://zarr.readthedocs.io/en/stable/index.html) format but also has a `numpy` backend for lower access overhead.
+
+On disk, it can be stored as a nested directory (e.g. `data/pusht_cchi_v7_replay.zarr`) or a zip file (e.g. `data/robomimic/datasets/square/mh/image_abs.hdf5.zarr.zip`).
+
+Due to the relative small size of our datasets, it's often possible to store the entire image-based dataset in RAM with [`Jpeg2000` compression](./diffusion_policy/codecs/imagecodecs_numcodecs.py) which eliminates disk IO during training at the expense increasing of CPU workload.
+
+Example:
+```
+data/pusht_cchi_v7_replay.zarr
+ ├── data
+ │   ├── action (25650, 2) float32
+ │   ├── img (25650, 96, 96, 3) float32
+ │   ├── keypoint (25650, 9, 2) float32
+ │   ├── n_contacts (25650, 1) float32
+ │   └── state (25650, 5) float32
+ └── meta
+     └── episode_ends (206,) int64
 ```
 
-Atau dengan array `α̂_i`:
-```python
-noise_schedule = NoiseScheduleVP(schedule='discrete', alphas_cumprod=alphas_cumprod)
-```
+Each array in `data` stores one data field from all episodes concatenated along the first dimension (time). The `meta/episode_ends` array stores the end index for each episode along the fist dimension.
 
-### 1.2. Continuous-time DPMs
+### `SharedMemoryRingBuffer`
+The [`SharedMemoryRingBuffer`](./diffusion_policy/shared_memory/shared_memory_ring_buffer.py) is a lock-free FILO data structure used extensively in our [real robot implementation](./diffusion_policy/real_world) to utilize multiple CPU cores while avoiding pickle serialization and locking overhead for `multiprocessing.Queue`. 
 
-Kita mendukung linear schedule (seperti yang digunakan di DDPM dan ScoreSDE) dan cosine schedule (seperti yang digunakan di improved-DDPM).
+As an example, we would like to get the most recent `To` frames from 5 RealSense cameras. We launch 1 realsense SDK/pipeline per process using [`SingleRealsense`](./diffusion_policy/real_world/single_realsense.py), each continuously writes the captured images into a `SharedMemoryRingBuffer` shared with the main process. We can very quickly get the last `To` frames in the main process due to the FILO nature of `SharedMemoryRingBuffer`.
 
-Linear schedule:
-```python
-noise_schedule = NoiseScheduleVP(schedule='linear', continuous_beta_0=0.1, continuous_beta_1=20.)
-```
+We also implemented [`SharedMemoryQueue`](./diffusion_policy/shared_memory/shared_memory_queue.py) for FIFO, which is used in [`RTDEInterpolationController`](./diffusion_policy/real_world/rtde_interpolation_controller.py).
 
-Cosine schedule:
-```python
-noise_schedule = NoiseScheduleVP(schedule='cosine')
-```
+### `RealEnv`
+In contrast to [OpenAI Gym](https://gymnasium.farama.org/), our polices interact with the environment asynchronously. In [`RealEnv`](./diffusion_policy/real_world/real_env.py), the `step` method in `gym` is split into two methods: `get_obs` and `exec_actions`. 
 
----
+The `get_obs` method returns the latest observation from `SharedMemoryRingBuffer` as well as their corresponding timestamps. This method can be call at any time during an evaluation episode.
 
-## 2. Wrap Model ke Continuous-time Noise Prediction Model
+The `exec_actions` method accepts a sequence of actions and timestamps for the expected time of execution for each step. Once called, the actions are simply enqueued to the `RTDEInterpolationController`, and the method returns without blocking for execution.
 
-Untuk model diffusion dengan input time label (bisa discrete-time labels atau continuous-time), kita wrap model function ke format berikut:
+## 🩹 Adding a Task
+Read and imitate:
+* `diffusion_policy/dataset/pusht_image_dataset.py`
+* `diffusion_policy/env_runner/pusht_image_runner.py`
+* `diffusion_policy/config/task/pusht_image.yaml`
 
-```python
-model_fn(x, t_continuous) -> noise
-```
+Make sure that `shape_meta` correspond to input and output shapes for your task. Make sure `env_runner._target_` and `dataset._target_` point to the new classes you have added. When training, add `task=<your_task_name>` to `train.py`'s arguments.
 
-dimana `t_continuous` adalah continuous time labels (0 sampai 1), dan output adalah noise prediction model.
+## 🩹 Adding a Method
+Read and imitate:
+* `diffusion_policy/workspace/train_diffusion_unet_image_workspace.py`
+* `diffusion_policy/policy/diffusion_unet_image_policy.py`
+* `diffusion_policy/config/train_diffusion_unet_image_workspace.yaml`
 
-### 2.1. Sampling Tanpa Guidance
+Make sure your workspace yaml's `_target_` points to the new workspace class you created.
 
-```python
-model_fn = model_wrapper(
-    model,
-    noise_schedule,
-    model_type=model_type,  # "noise" atau "x_start" atau "v" atau "score"
-    model_kwargs=model_kwargs,
-)
-```
+## 🏷️ License
+This repository is released under the MIT license. See [LICENSE](LICENSE) for additional details.
 
-### 2.2. Sampling dengan Classifier Guidance
-
-Untuk DPM dengan classifier guidance, kita perlu menentukan classifier function dan guidance scale:
-
-```python
-model_fn = model_wrapper(
-    model,
-    noise_schedule,
-    model_type=model_type,
-    model_kwargs=model_kwargs,
-    guidance_type="classifier",
-    condition=condition,
-    guidance_scale=guidance_scale,
-    classifier_fn=classifier,
-    classifier_kwargs=classifier_kwargs,
-)
-```
-
-### 2.3. Sampling dengan Classifier-Free Guidance
-
-Untuk classifier-free guidance, model memerlukan input `cond` tambahan:
-
-```python
-model_fn = model_wrapper(
-    model,
-    noise_schedule,
-    model_type=model_type,
-    model_kwargs=model_kwargs,
-    guidance_type="classifier-free",
-    condition=condition,
-    unconditional_condition=unconditional_condition,
-    guidance_scale=guidance_scale,
-)
-```
-
----
-
-## 3. Contoh Penggunaan Detail
-
-### Contoh: Unconditional Sampling dengan DPM-Solver
-
-Direkomendasikan menggunakan 3rd-order (dpmsolver atau dpmsolver++, multistep) DPM-Solver:
-
-```python
-from dpm_solver_pytorch import NoiseScheduleVP, model_wrapper, DPM_Solver
-
-# 1. Definisikan noise schedule
-noise_schedule = NoiseScheduleVP(schedule='discrete', betas=betas)
-
-# 2. Convert model ke continuous-time noise prediction model
-model_fn = model_wrapper(
-    model,
-    noise_schedule,
-    model_type="noise",
-    model_kwargs=model_kwargs,
-)
-
-# 3. Definisikan dpm-solver
-dpm_solver = DPM_Solver(model_fn, noise_schedule, algorithm_type="dpmsolver++")
-
-# 4. Sample dengan singlestep DPM-Solver
-x_sample = dpm_solver.sample(
-    x_T,
-    steps=20,
-    order=3,
-    skip_type="time_uniform",
-    method="multistep",
-)
-```
-
-### Contoh: Classifier-Free Guidance Sampling dengan DPM-Solver++ 2M
-
-Direkomendasikan menggunakan 2nd-order (dpmsolver++, multistep) DPM-Solver:
-
-```python
-from dpm_solver_pytorch import NoiseScheduleVP, model_wrapper, DPM_Solver
-
-# 1. Definisikan noise schedule
-noise_schedule = NoiseScheduleVP(schedule='discrete', betas=betas)
-
-# 2. Convert model ke continuous-time noise prediction model
-model_fn = model_wrapper(
-    model,
-    noise_schedule,
-    model_type="noise",
-    model_kwargs=model_kwargs,
-    guidance_type="classifier-free",
-    condition=condition,
-    unconditional_condition=unconditional_condition,
-    guidance_scale=guidance_scale,
-)
-
-# 3. Definisikan dpm-solver dengan algorithm_type="dpmsolver++"
-dpm_solver = DPM_Solver(model_fn, noise_schedule, algorithm_type="dpmsolver++")
-
-# Untuk pixel-space DPMs, bisa tambahkan dynamic thresholding:
-# dpm_solver = DPM_Solver(model_fn, noise_schedule, algorithm_type="dpmsolver++",
-#                         correcting_x0_fn="dynamic_thresholding")
-
-# 4. Sample dengan multistep DPM-Solver order 2
-x_sample = dpm_solver.sample(
-    x_T,
-    steps=20,
-    order=2,
-    skip_type="time_uniform",
-    method="multistep",
-)
-```
-
----
-
-## 4. Tipe Model yang Didukung
-
-| Tipe Model | Training Objective | Contoh Paper |
-|-----------|-------------------|--------------|
-| "noise": noise prediction model | `E[ω₁(t)||ε_θ(x_t,t) - ε||²]` | DDPM, Stable-Diffusion |
-| "x_start": data prediction model | `E[ω₂(t)||x_θ(x_t,t) - x_0||²]` | DALL·E 2 |
-| "v": velocity prediction model | `E[ω₃(t)||v_θ(x_t,t) - (α_tε - σ_tx_0)||²]` | Imagen Video |
-| "score": marginal score function | `E[ω₄(t)||σ_t s_θ(x_t,t) + ε||²]` | ScoreSDE |
-
----
-
-## 5. Metode Sampling yang Didukung
-
-| Metode | Order yang Didukung | Thresholding | Keterangan |
-|--------|---------------------|--------------|------------|
-| DPM-Solver, singlestep | 1, 2, 3 | Tidak | Runge-Kutta-like |
-| DPM-Solver, multistep | 1, 2, 3 | Tidak | Adams-Bashforth-like |
-| DPM-Solver++, singlestep | 1, 2, 3 | Ya | |
-| DPM-Solver++, multistep | 1, 2, 3 | Ya | **Direkomendasikan untuk guided sampling dengan order=2**, dan untuk unconditional sampling dengan order=3 |
-
----
-
-## 6. Pengaturan Skip Type
-
-Kita mendukung tiga tipe `skip_type` untuk pemilihan intermediate time steps:
-
-- **`logSNR`**: Uniform logSNR untuk time steps. **Direkomendasikan untuk low-resolutional images**.
-- **`time_uniform`**: Uniform time untuk time steps. **Direkomendasikan untuk high-resolutional images**.
-- **`time_quadratic`**: Quadratic time untuk time steps.
-
----
-
-## 7. Detail Implementasi Multistep DPM-Solver
-
-Untuk multistep DPM-Solver dengan NFE = `steps`:
-
-- **Order == 1**: Menggunakan K steps dari DPM-Solver-1 (DDIM).
-- **Order == 2**: 
-  - Pertama menggunakan 1 step dari DPM-Solver-1
-  - Kemudian menggunakan (K-1) step dari multistep DPM-Solver-2
-- **Order == 3**:
-  - Pertama menggunakan 1 step dari DPM-Solver-1
-  - Kemudian 1 step dari multistep DPM-Solver-2
-  - Kemudian (K-2) step dari multistep DPM-Solver-3
-
----
-
-## 8. Penggunaan dengan Diffusers Library
-
-DPM-Solver++ 2M juga tersedia di library [🤗 Diffusers](https://github.com/huggingface/diffusers):
-
-```python
-import torch
-from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
-
-model_id = "stabilityai/stable-diffusion-2-1"
-
-# Gunakan DPMSolverMultistepScheduler (DPM-Solver++)
-pipe = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=torch.float16)
-pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
-pipe = pipe.to("cuda")
-
-prompt = "a photo of an astronaut riding a horse on mars"
-image = pipe(prompt).images[0]
-image.save("astronaut_rides_horse.png")
-```
-
----
-
-## 📝 Catatan Penting
-
-1. **Kualitas Model**: Jika kualitas sampel dari 1000-step DDIM buruk, maka DPM-Solver tidak dapat memperbaikinya. DPM-Solver **dapat** mempercepat konvergensi, tapi **tidak dapat** memperbaiki kualitas sampel konvergen.
-
-2. **Dynamic Thresholding**: Hanya valid untuk **pixel-space** diffusion models dengan `algorithm_type="dpmsolver++"`. **Tidak cocok** untuk latent-space models seperti Stable Diffusion.
-
-3. **Denoise to Zero**: Dapat meningkatkan FID untuk low-resolutional images seperti CIFAR-10, tapi pengaruhnya kecil untuk high-resolutional images. Karena membutuhkan 1 evaluasi fungsi tambahan, tidak direkomendasikan untuk high-res images.
-
----
-
-## 🔗 Referensi Tambahan
-
-- [Repositori GitHub Resmi](https://github.com/LuChengTHU/dpm-solver)
-- [Hugging Face Spaces Demo](https://huggingface.co/spaces/LuChengTHU/dpmsolver_sdm)
-- [Paper DPM-Solver](https://arxiv.org/abs/2206.00927)
-- [Paper DPM-Solver++](https://arxiv.org/abs/2211.01095)
+## 🙏 Acknowledgement
+* Our [`ConditionalUnet1D`](./diffusion_policy/model/diffusion/conditional_unet1d.py) implementation is adapted from [Planning with Diffusion](https://github.com/jannerm/diffuser).
+* Our [`TransformerForDiffusion`](./diffusion_policy/model/diffusion/transformer_for_diffusion.py) implementation is adapted from [MinGPT](https://github.com/karpathy/minGPT).
+* The [BET](./diffusion_policy/model/bet) baseline is adapted from [its original repo](https://github.com/notmahi/bet).
+* The [IBC](./diffusion_policy/policy/ibc_dfo_lowdim_policy.py) baseline is adapted from [Kevin Zakka's reimplementation](https://github.com/kevinzakka/ibc).
+* The [Robomimic](https://github.com/ARISE-Initiative/robomimic) tasks and [`ObservationEncoder`](https://github.com/ARISE-Initiative/robomimic/blob/master/robomimic/models/obs_nets.py) are used extensively in this project.
+* The [Push-T](./diffusion_policy/env/pusht) task is adapted from [IBC](https://github.com/google-research/ibc).
+* The [Block Pushing](./diffusion_policy/env/block_pushing) task is adapted from [BET](https://github.com/notmahi/bet) and [IBC](https://github.com/google-research/ibc).
+* The [Kitchen](./diffusion_policy/env/kitchen) task is adapted from [BET](https://github.com/notmahi/bet) and [Relay Policy Learning](https://github.com/google-research/relay-policy-learning).
+* Our [shared_memory](./diffusion_policy/shared_memory) data structures are heavily inspired by [shared-ndarray2](https://gitlab.com/osu-nrsg/shared-ndarray2).
