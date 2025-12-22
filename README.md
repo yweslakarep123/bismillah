@@ -178,6 +178,52 @@ Untuk lingkungan **Kitchen (low-dim)**, konfigurasi training diffusion policy be
 | **Training Schedule** | `device = "cuda:0"`; `seed = 42`; `num_epochs = 5000`; `gradient_accumulate_every = 1`; `lr_scheduler = cosine`; `lr_warmup_steps = 1000` |
 | **Eval & Checkpoint** | `rollout_every = 50`; `val_every = 1`; `sample_every = 5`; `checkpoint_every = 50`; menyimpan `latest.ckpt` dan Top-K berdasarkan `test_mean_score` |
 
+**Variabel konfigurasi training (dengan contoh nilai dari Kitchen low-dim):**
+
+| Variabel | Deskripsi | Contoh nilai |
+| --- | --- | --- |
+| `training.device` | Perangkat eksekusi | `"cuda:0"` |
+| `training.seed` | Seed reproducibility | `42` |
+| `training.debug` | Mode debug (batasi epoch/step) | `False` |
+| `training.resume` | Lanjutkan dari checkpoint terakhir | `True` |
+| `training.lr_scheduler` | Skema LR | `cosine` |
+| `training.lr_warmup_steps` | Jumlah warmup step LR | `1000` |
+| `training.num_epochs` | Total epoch | `5000` |
+| `training.gradient_accumulate_every` | Akumulasi grad sebelum step optimizer | `1` |
+| `training.use_ema` | Gunakan EMA untuk model | `True` |
+| `training.rollout_every` | Interval epoch untuk rollout | `50` |
+| `training.checkpoint_every` | Interval epoch simpan checkpoint | `50` |
+| `training.val_every` | Interval epoch untuk validasi | `1` |
+| `training.sample_every` | Interval epoch untuk sampling | `5` |
+| `training.max_train_steps` | Batas step per epoch (opsional) | `null` |
+| `training.max_val_steps` | Batas step val per epoch (opsional) | `null` |
+| `training.tqdm_interval_sec` | Interval refresh tqdm | `1.0` |
+
+**Variabel konfigurasi environment & dataset (Kitchen low-dim):**
+
+| Variabel | Deskripsi | Contoh nilai |
+| --- | --- | --- |
+| `env_runner.dataset_dir` | Folder data kitchen | `data/kitchen` |
+| `env_runner.n_train` | Jumlah traj untuk train | `6` |
+| `env_runner.n_train_vis` | Traj train untuk visualisasi | `2` |
+| `env_runner.train_start_seed` | Seed awal train | `0` |
+| `env_runner.n_test` | Jumlah traj untuk test | `50` |
+| `env_runner.n_test_vis` | Traj test untuk visualisasi | `4` |
+| `env_runner.test_start_seed` | Seed awal test | `100000` |
+| `env_runner.max_steps` | Langkah maks per episode | `280` |
+| `env_runner.n_obs_steps` | Observation horizon | `4` |
+| `env_runner.n_action_steps` | Action horizon | `8` |
+| `env_runner.render_hw` | Resolusi render (H, W) | `[240, 360]` |
+| `env_runner.fps` | Frame per second simulasi | `12.5` |
+| `env_runner.past_action` | Apakah past action terlihat | `False` |
+| `env_runner.n_envs` | Jumlah env paralel (opsional) | `null` |
+| `dataset.dataset_dir` | Folder data kitchen | `data/kitchen` |
+| `dataset.horizon` | Panjang prediksi `T` | `16` |
+| `dataset.pad_before` | Padding sebelum sequence | `n_obs_steps - 1` (mis. `3`) |
+| `dataset.pad_after` | Padding setelah sequence | `n_action_steps - 1` (mis. `7`) |
+| `dataset.seed` | Seed dataset split | `42` |
+| `dataset.val_ratio` | Rasio validasi | `0.02` |
+
 Untuk menjalankan eksperimen ini:
 
 ```console
