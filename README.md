@@ -224,6 +224,22 @@ Untuk lingkungan **Kitchen (low-dim)**, konfigurasi training diffusion policy be
 | `dataset.seed` | Seed dataset split | `42` |
 | `dataset.val_ratio` | Rasio validasi | `0.02` |
 
+### Konfigurasi Testing untuk Environment Kitchen (Low-Dim)
+
+Pengujian menggunakan `eval.py` yang memuat checkpoint, memilih model (EMA jika ada), lalu menjalankan `KitchenLowdimRunner`. Ringkasan konfigurasi dan parameter penting:
+
+| Komponen | Deskripsi | Contoh nilai |
+| --- | --- | --- |
+| **Checkpoint & Device** | Path checkpoint & device inference | `checkpoint=path/to/latest.ckpt`; `device=cuda:0` |
+| **Model yang dipakai** | Jika `training.use_ema=True`, pakai EMA model; else model biasa | `use_ema=True` |
+| **Inference steps** | Jumlah langkah denoising saat inferensi | `num_inference_steps = 100` |
+| **Noise Scheduler** | Di config kitchen low-dim memakai **DDPM** (`diffusers.schedulers.scheduling_ddpm.DDPMScheduler`) | `num_train_timesteps=100`; `beta_start=1e-4`; `beta_end=0.02`; `beta_schedule=squaredcos_cap_v2`; `variance_type=fixed_small`; `clip_sample=True`; `prediction_type=epsilon` |
+| **Catatan DDIM** | Jika ingin DDIM, ganti scheduler ke `diffusers.schedulers.scheduling_ddim.DDIMScheduler` dan sesuaikan `num_inference_steps`; default kitchen low-dim tidak memakai DDIM. | — |
+| **Env init (test split)** | `n_test=50`; `n_test_vis=4`; `test_start_seed=100000`; render `H×W=240×360`; `fps=12.5`; `max_steps=280`; `n_obs_steps=4`; `n_action_steps=8`; `past_action=False` | dari `config/task/kitchen_lowdim.yaml` |
+| **Rendering & video** | Video direkam untuk `n_test_vis` pertama; codec H.264, `crf=22`, langkah render mengikuti `fps` | menghasilkan berkas `.mp4` di `media/` |
+| **Eksekusi batch** | Env dijalankan paralel dengan `AsyncVectorEnv`; tiap env di-init dengan seed & (opsional) init qpos/qvel; policy reset per chunk | mengikuti `KitchenLowdimRunner` |
+| **Output evaluasi** | `eval_log.json` berisi metrik (reward/success) dan path video; media disimpan di `media/` dalam `output_dir` | contoh: `output_dir/media/<id>.mp4` |
+
 Untuk menjalankan eksperimen ini:
 
 ```console
